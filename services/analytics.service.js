@@ -1,140 +1,123 @@
-import Transaction from '../models/transaction.model.js';
+import supabase from '../config/supabase.js';
 
+// --- Helper: Fetch raw transactions for a range ---
+const getTransactionsByRange = async (userId, startDate, endDate, type = null) => {
+    let query = supabase
+        .from('transactions')
+        .select('amount, date, type, categories(name, color, icon)')
+        .eq('user_id', userId)
+        .gte('date', startDate)
+        .lte('date', endDate);
+
+    if (type) {
+        query = query.eq('type', type);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data;
+};
+
+// 1. Analyze Spending
 export const analyzeSpendingByCategory = async (userId, startDate, endDate) => {
-    try {   
-        const transactions = await Transaction.aggregate([
-            { $match: { userId: userId, date: { $gte: new Date(startDate), $lte: new Date(endDate) }, type: 'expense' } },
-            {
-                $group: {
-                    _id: '$categoryId',
-                    totalAmount: { $sum: '$amount' }
-                }
-            },
-            {
-                $lookup: {
-                    from: 'categories',
-                    localField: '_id',
-                    foreignField: '_id',
-                    as: 'category'
-                }
-            },
-            {
-                $unwind: '$category'
-            },
-            {
-                $project: {
-                    _id: 0,
-                    category: '$category.name',
-                    totalAmount: 1
-                }
-            }
-        ]);
+    try {
+        const transactions = await getTransactionsByRange(userId, startDate, endDate, 'expense');
 
-        return transactions;
+        // JS Aggregation: Group by Category Name
+        const categoryMap = {};
+
+        transactions.forEach(tx => {
+            // Handle if category was deleted (might be null)
+            const catName = tx.categories?.name || 'Uncategorized';
+            const catColor = tx.categories?.color || '#cbd5e1'; // Default gray
+
+            if (!categoryMap[catName]) {
+                categoryMap[catName] = {
+                    category: catName,
+                    totalAmount: 0,
+                    color: catColor
+                };
+            }
+            categoryMap[catName].totalAmount += Number(tx.amount);
+        });
+
+        // Convert Map to Array
+        return Object.values(categoryMap);
     } catch (error) {
-        throw new Error('Error analyzing spending by category');
+        console.error("Analytics Error:", error);
+        throw new Error('Error analyzing spending');
     }
 };
 
-
+// 2. Analyze Income
 export const analyzeIncomeByCategory = async (userId, startDate, endDate) => {
     try {
-        const transactions = await Transaction.aggregate([
-            { $match: { userId: userId, date: { $gte: new Date(startDate), $lte: new Date(endDate) }, type: 'income' } },
-            {
-                $group: {
-                    _id: '$categoryId',
-                    totalAmount: { $sum: '$amount' }
-                }   
-            },
-            {
-                $lookup: {
-                    from: 'categories',
-                    localField: '_id',
-                    foreignField: '_id',
-                    as: 'category'
-                }   
-            },
-            {
-                $unwind: '$category'
-            },
-            {
-                $project: {
-                    _id: 0,
-                    category: '$category.name',
-                    totalAmount: 1
-                }   
+        const transactions = await getTransactionsByRange(userId, startDate, endDate, 'income');
+
+        const categoryMap = {};
+        transactions.forEach(tx => {
+            const catName = tx.categories?.name || 'Uncategorized';
+
+            if (!categoryMap[catName]) {
+                categoryMap[catName] = { category: catName, totalAmount: 0 };
             }
-        ]);
-        return transactions;
+            categoryMap[catName].totalAmount += Number(tx.amount);
+        });
+
+        return Object.values(categoryMap);
     } catch (error) {
-        throw new Error('Error analyzing income by category');
+        throw new Error('Error analyzing income');
     }
 };
 
+// 3. Monthly Trends (Jan - Dec)
 export const analyzeMonthlyTrends = async (userId, year) => {
     try {
-        const transactions = await Transaction.aggregate([
-            { $match: { userId: userId, date: { $gte: new Date(`${year}-01-01`), $lte: new Date(`${year}-12-31`) } } },
-            {
-                $group: {
-                    _id: { month: { $month: '$date' }, type: '$type' },
-                    totalAmount: { $sum: '$amount' }
-                }
-            },
-            {
-                $project: {
-                    _id: 0,
-                    month: '$_id.month',
-                    type: '$_id.type',
-                    totalAmount: 1
-                }
-            },
-        ]);
-        return transactions;
+        const startDate = `${year}-01-01`;
+        const endDate = `${year}-12-31`;
+
+        // Fetch ALL transactions for the year
+        const transactions = await getTransactionsByRange(userId, startDate, endDate);
+
+        // Initialize array for 12 months
+        const monthlyData = Array.from({ length: 12 }, (_, i) => ({
+            month: i + 1, // 1 = Jan
+            income: 0,
+            expense: 0
+        }));
+
+        transactions.forEach(tx => {
+            const date = new Date(tx.date);
+            const monthIndex = date.getMonth(); // 0 = Jan
+
+            if (tx.type === 'income') {
+                monthlyData[monthIndex].income += Number(tx.amount);
+            } else {
+                monthlyData[monthIndex].expense += Number(tx.amount);
+            }
+        });
+
+        return monthlyData;
     } catch (error) {
         throw new Error('Error analyzing monthly trends');
     }
 };
 
-// Pie Chart Data
+// 4. Pie Chart Wrapper
 export const getSpendingDistribution = async (userId, startDate, endDate) => {
-    try {
-        const spendingData = await analyzeSpendingByCategory(userId, startDate, endDate);
-        const totalSpending = spendingData.reduce((acc, curr) => acc + curr.totalAmount, 0);
-        const distribution = spendingData.map(item => ({
-            category: item.category,
-            amount: item.totalAmount,
-            percentage: ((item.totalAmount / totalSpending) * 100).toFixed(2)
-        }));
-        return distribution;
-    }
-    catch (error) {
-        throw new Error('Error getting spending distribution');
-    }
+    const spendingData = await analyzeSpendingByCategory(userId, startDate, endDate);
 
+    const totalSpending = spendingData.reduce((acc, curr) => acc + curr.totalAmount, 0);
+
+    return spendingData.map(item => ({
+        name: item.category,
+        value: item.totalAmount,
+        color: item.color,
+        percentage: totalSpending > 0 ? ((item.totalAmount / totalSpending) * 100).toFixed(1) : 0
+    }));
 };
 
-// Bar Chart Data
+// 5. Bar Chart Wrapper (Income vs Expense)
 export const getIncomeVsExpense = async (userId, year) => {
-    try {
-        const monthlyData = await analyzeMonthlyTrends(userId, year);
-        const incomeVsExpense = Array.from({ length: 12 }, (_, i) => ({
-            month: i + 1,
-            income: 0,
-            expense: 0
-        }));
-        monthlyData.forEach(item => {
-            const monthIndex = item.month - 1;
-            if (item.type === 'income') {
-                incomeVsExpense[monthIndex].income = item.totalAmount;
-            } else if (item.type === 'expense') {
-                incomeVsExpense[monthIndex].expense = item.totalAmount;
-            }
-        });
-        return incomeVsExpense;
-    } catch (error) {
-        throw new Error('Error getting income vs expense');
-    }
+    return await analyzeMonthlyTrends(userId, year);
 };
-

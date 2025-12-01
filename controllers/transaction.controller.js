@@ -1,121 +1,138 @@
-import Transaction from "../models/transaction.model.js";
-import Budget from "../models/budget.model.js";
+import supabase from '../config/supabase.js';
 
-// Create a new transaction 
-
+// 1. Create a new transaction 
 export const createTransaction = async (req, res, next) => {
     try {
         const { amount, type, categoryId, date, description } = req.body;
-        if (!amount || !type || !categoryId || !date) {
-            const error = new Error("Amount, type, categoryId, and date are required");
+
+        // Validation: Use strictly checks (amount !== undefined) to allow 0 if needed
+        if (amount === undefined || !type || !categoryId) {
+            const error = new Error("Amount, type, and categoryId are required");
             error.statusCode = 400;
             throw error;
         }
 
-        const newTransaction = new Transaction({
-            userId: req.user._id,
-            amount,
-            type,
-            categoryId,
-            date: date || new Date(),
-            description
-        });
-        await newTransaction.save();
+        // Validate Type matches SQL constraint
+        if (!['income', 'expense'].includes(type)) {
+            const error = new Error("Type must be 'income' or 'expense'");
+            error.statusCode = 400;
+            throw error;
+        }
 
-        // Update budget spent
-        const month = newTransaction.date.toISOString().slice(0, 7);
-        await Budget.findOneAndUpdate(
-            { userId: req.user._id, categoryId, month },
-            { $inc: { spent: amount } },
-            { upsert: true, new: true }
-        );
+        const { data, error } = await supabase
+            .from('transactions')
+            .insert({
+                user_id: req.user.id, // Comes from your authorize middleware
+                amount,
+                type,
+                category_id: categoryId,
+                date: date || new Date(), // Defaults to now if missing
+                description
+            })
+            .select()
+            .single();
 
-        res.status(201).json({ message: "Transaction created", data: newTransaction });
+        if (error) throw error;
+
+        res.status(201).json({ message: "Transaction created", data });
     } catch (error) {
         next(error);
     }
 };
 
-// Get transactions for a user, with optional type filter
-
-
+// 2. Get transactions (Added Pagination & Filtering)
 export const getTransactions = async (req, res, next) => {
     try {
-        const { type } = req.query; // optional filter
-        const filter = { userId: req.user._id };
-        if (type) filter.type = type;
+        const { type, page = 1, limit = 20 } = req.query;
 
-        const transactions = await Transaction.find(filter).sort({ date: -1 });
-        res.status(200).json({ data: transactions });
+        // Calculate pagination range for Supabase
+        const from = (page - 1) * limit;
+        const to = from + limit - 1;
+
+        let query = supabase
+            .from('transactions')
+            .select('*, categories(name, icon, color)', { count: 'exact' }) // Get total count too
+            .eq('user_id', req.user.id)
+            .order('date', { ascending: false })
+            .range(from, to); // Apply pagination
+
+        if (type) {
+            query = query.eq('type', type);
+        }
+
+        const { data, error, count } = await query;
+
+        if (error) throw error;
+
+        res.status(200).json({
+            data,
+            meta: {
+                total: count,
+                page: parseInt(page),
+                limit: parseInt(limit)
+            }
+        });
     } catch (error) {
         next(error);
     }
 };
 
-// Get a transaction by ID
+// 3. Get a transaction by ID
 export const getTransactionById = async (req, res, next) => {
-    try { 
+    try {
         const { id } = req.params;
-        const transaction = await Transaction.findOne({ _id: id, userId: req.user._id });
-        if (!transaction) {
+        const { data, error } = await supabase
+            .from('transactions')
+            .select('*, categories(*)')
+            .eq('user_id', req.user.id) // Security: Ensure they own it
+            .eq('id', id)
+            .single();
+
+        if (error) throw error;
+        if (!data) {
             const error = new Error("Transaction not found");
             error.statusCode = 404;
             throw error;
         }
-        res.status(200).json({ data: transaction });
+        res.status(200).json({ data });
     } catch (error) {
         next(error);
     }
 };
 
-// Update a transaction
+// 4. Update a transaction
 export const updateTransaction = async (req, res, next) => {
     try {
         const { id } = req.params;
         const { amount, type, categoryId, date, description } = req.body;
 
-        // Find old transaction
-        const oldTx = await Transaction.findOne({ _id: id, userId: req.user._id });
-        if (!oldTx) {
-            const error = new Error("Transaction not found");
+        const updates = {};
+        // Strict undefined checks allow updating values to 0 or empty strings if needed
+        if (amount !== undefined) updates.amount = amount;
+        if (type) updates.type = type;
+        if (categoryId) updates.category_id = categoryId;
+        if (date) updates.date = date;
+        if (description !== undefined) updates.description = description;
+
+        // Security: We must use .eq('user_id', req.user.id) so they can't update someone else's row
+        const { data, error } = await supabase
+            .from('transactions')
+            .update(updates)
+            .eq('user_id', req.user.id)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        // If no data returned, it means the row didn't exist or didn't belong to user
+        if (!data) {
+            const error = new Error("Transaction not found or unauthorized");
             error.statusCode = 404;
             throw error;
         }
 
-        const oldAmount = oldTx.amount;
-        const oldCategory = oldTx.categoryId;
-        const oldMonth = oldTx.date.toISOString().slice(0, 7);
-
-        // Apply updates
-        if (amount) oldTx.amount = amount;
-        if (type) oldTx.type = type;
-        if (categoryId) oldTx.categoryId = categoryId;
-        if (date) oldTx.date = date;
-        if (description) oldTx.description = description;
-
-        await oldTx.save();
-
-        // NEW values
-        const newAmount = oldTx.amount;
-        const newCategory = oldTx.categoryId;
-        const newMonth = oldTx.date.toISOString().slice(0, 7);
-
-        // --- Update Budgets ---
-
-        // 1) Subtract old amount from old budget
-        await Budget.findOneAndUpdate(
-            { userId: req.user._id, categoryId: oldCategory, month: oldMonth },
-            { $inc: { spent: -oldAmount } }
-        );
-
-        // 2) Add new amount to new budget
-        await Budget.findOneAndUpdate(
-            { userId: req.user._id, categoryId: newCategory, month: newMonth },
-            { $inc: { spent: newAmount } },
-            { upsert: true }
-        );
-
-        res.status(200).json({ message: "Transaction updated", data: oldTx });
+        res.status(200).json({ message: "Transaction updated", data });
 
     } catch (error) {
         next(error);
@@ -123,25 +140,28 @@ export const updateTransaction = async (req, res, next) => {
 };
 
 
-// Delete a transaction
-
-
+// 5. Delete a transaction
 export const deleteTransaction = async (req, res, next) => {
     try {
-        const { id } = req.params;  
-        const transaction = await Transaction.findOneAndDelete({ _id: id, userId: req.user._id });
+        const { id } = req.params;
 
-        if (!transaction) {
+        // Supabase delete returns status 204 (No Content) usually, 
+        // but we can ask for the deleted row to ensure it existed.
+        const { data, error } = await supabase
+            .from('transactions')
+            .delete()
+            .eq('user_id', req.user.id)
+            .eq('id', id)
+            .select(); // Select returns the deleted row
+
+        if (error) throw error;
+
+        // If data array is empty, nothing was deleted (ID didn't exist)
+        if (!data || data.length === 0) {
             const error = new Error("Transaction not found");
             error.statusCode = 404;
             throw error;
-        }  
-        // Update budget spent
-        const month = transaction.date.toISOString().slice(0, 7);
-        await Budget.findOneAndUpdate(
-            { userId: req.user._id, categoryId: transaction.categoryId, month },
-            { $inc: { spent: -transaction.amount } }
-        );
+        }
 
         res.status(200).json({ message: "Transaction deleted" });
     } catch (error) {

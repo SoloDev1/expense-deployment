@@ -1,262 +1,174 @@
-import mongoose from "mongoose";
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto'; // Built-in node module for random passwords
-import User from '../models/user.model.js';
-import Category from "../models/category.model.js";
-import { JWT_SECRET, JWT_EXPIRES_IN, GOOGLE_CLIENT_ID, APPLE_BUNDLE_ID } from '../config/env.js';
-import { OAuth2Client } from "google-auth-library";
-import appleSignin from 'apple-signin-auth'; 
+import supabase from '../config/supabase.js';
 
-const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
-
-// --- HELPER: Generate Token ---
-const generateToken = (id) => {
-    return jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-};
-
-// --- HELPER: Create Default Categories ---
-// We extract this so we can reuse it for Email, Google, and Apple signups
-const createDefaultCategories = async (userId, session) => {
+// --- HELPER: Create Default Categories with Visuals ---
+const createDefaultCategories = async (userId) => {
     const defaultCategories = [
-        { name: 'Salary', type: 'income', userId },
-        { name: 'Freelance', type: 'income', userId },
-        { name: 'Food', type: 'expense', userId },
-        { name: 'Rent', type: 'expense', userId },
-        { name: 'Utilities', type: 'expense', userId },
-        { name: 'Entertainment', type: 'expense', userId },
+        { name: 'Salary', type: 'income', icon: 'wallet', color: '#10B981', user_id: userId }, // Green
+        { name: 'Freelance', type: 'income', icon: 'laptop', color: '#3B82F6', user_id: userId }, // Blue
+        { name: 'Food', type: 'expense', icon: 'pizza', color: '#F59E0B', user_id: userId }, // Orange
+        { name: 'Rent', type: 'expense', icon: 'home', color: '#EF4444', user_id: userId }, // Red
+        { name: 'Utilities', type: 'expense', icon: 'bolt', color: '#6366F1', user_id: userId }, // Indigo
+        { name: 'Entertainment', type: 'expense', icon: 'film', color: '#EC4899', user_id: userId }, // Pink
     ];
-    await Category.insertMany(defaultCategories, { session });
+
+    const { error } = await supabase
+        .from('categories')
+        .insert(defaultCategories);
+
+    if (error) {
+        console.error('Error creating default categories:', error.message);
+    }
 };
 
-// STANDARD SIGN UP
-
+// 1. Standard Sign Up
 export const signUp = async (req, res, next) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
         const { name, email, password } = req.body;
 
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-            const error = new Error('User already exists');
-            error.statusCode = 409;
-            throw error;
-        }
-
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        // Create User
-        const [newUser] = await User.create([{
-            name,
+        const { data: authData, error: authError } = await supabase.auth.signUp({
             email,
-            password: hashedPassword
-        }], { session });
+            password,
+            options: { data: { name } } // Metadata for trigger
+        });
 
-        // Create Categories
-        await createDefaultCategories(newUser._id, session);
+        if (authError) throw authError;
 
-        const token = generateToken(newUser._id);
-
-        await session.commitTransaction();
-        session.endSession();
+        if (authData.user) {
+            // SAFETY DELAY: The SQL Trigger 'on_auth_user_created' needs about 100-500ms 
+            // to create the row in public.users. We wait briefly to avoid Foreign Key errors.
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            await createDefaultCategories(authData.user.id);
+        }
 
         res.status(201).json({
             success: true,
             message: 'User created successfully',
-            data: { token, user: newUser }
+            data: { user: authData.user, session: authData.session }
         });
     } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
         next(error);
     }
 }
 
-
-// STANDARD SIGN IN
-
+// 2. Standard Sign In
 export const signIn = async (req, res, next) => {
     try {
         const { email, password } = req.body;
-        const user = await User.findOne({ email });
 
-        if (!user) {
-            const error = new Error('User not found');
-            error.statusCode = 404;
-            throw error;
-        }
+        const { data, error } = await supabase.auth.signInWithPassword({
+            email,
+            password
+        });
 
-        // Check if user exists but only has social login (no password)
-        if (!user.password) {
-             const error = new Error('Please login with Google/Apple');
-             error.statusCode = 400;
-             throw error;
-        }
-
-        const isPasswordValid = await bcrypt.compare(password, user.password);
-
-        if (!isPasswordValid) {
-            const error = new Error('Invalid password');
-            error.statusCode = 401;
-            throw error;
-        }
-
-        const token = generateToken(user._id);
+        if (error) throw error;
 
         res.status(200).json({
             success: true,
             message: 'User signed in successfully',
-            data: { token, user }
+            data: { 
+                token: data.session.access_token, 
+                user: data.user 
+            }
         });
     } catch (error) {
         next(error);
     }
 }
 
-
-// GOOGLE SIGN IN
-
+// 3. Google Sign In
 export const googleSignIn = async (req, res, next) => {
-    const session = await mongoose.startSession();
     try {
-        const { tokenId } = req.body; // This is the idToken from frontend
+        const { tokenId } = req.body; // Google ID Token from Frontend
 
-        // Verify Token
-        const ticket = await googleClient.verifyIdToken({
-            idToken: tokenId,
-            audience: GOOGLE_CLIENT_ID,
+        const { data, error } = await supabase.auth.signInWithIdToken({
+            provider: 'google',
+            token: tokenId,
         });
-        
-        const { sub: googleId, email, name, picture } = ticket.getPayload();
-        
-        // Check if user exists
-        let user = await User.findOne({ email });
 
-        if (user) {
-            // Existing user: Link Google ID if not present
-            if (!user.googleId) {
-                user.googleId = googleId;
-                await user.save();
-            }
-        } else {
-            // New User: Needs Transaction to create User + Categories
-            session.startTransaction();
-            
-            // Generate a random password to satisfy Schema if password is required
-            const randomPassword = crypto.randomBytes(16).toString('hex'); 
-            
-            const [newUser] = await User.create([{
-                name,
-                email,
-                googleId,
-                password: randomPassword, // Or leave empty if Schema allows
-                // avatar: picture // Add this if your schema has an avatar field
-            }], { session });
+        if (error) throw error;
 
-            await createDefaultCategories(newUser._id, session);
-            
-            await session.commitTransaction();
-            user = newUser;
+        // Check if categories exist (i.e., is this a new user?)
+        const { count } = await supabase
+            .from('categories')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', data.user.id);
+
+        if (count === 0) {
+            // Safety delay not strictly needed here as login usually implies user exists,
+            // but for first-time social login, the trigger still runs.
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await createDefaultCategories(data.user.id);
         }
 
-        const token = generateToken(user._id);
-        
         res.status(200).json({
             success: true,
             message: 'Google login successful',
-            data: { token, user }
+            data: { token: data.session.access_token, user: data.user }
         });
 
     } catch (error) {
-        if (session.inTransaction()) {
-            await session.abortTransaction();
-        }
         next(error);
-    } finally {
-        session.endSession();
     }
 };
 
-// APPLE SIGN IN
-
+// 4. Apple Sign In
 export const appleSignIn = async (req, res, next) => {
-    const session = await mongoose.startSession();
     try {
-        const { identityToken, fullName } = req.body; // fullName is { givenName, familyName }
+        const { identityToken, fullName } = req.body;
 
-        // Verify Token using apple-signin-auth
-        const appleIdTokenClaims = await appleSignin.verifyIdToken(identityToken, {
-            audience: APPLE_BUNDLE_ID, 
-            ignoreExpiration: true, // Optional, depending on your strictness
+        const { data, error } = await supabase.auth.signInWithIdToken({
+            provider: 'apple',
+            token: identityToken,
         });
 
-        const { sub: appleId, email } = appleIdTokenClaims;
+        if (error) throw error;
 
-        // Check for user by Apple ID *OR* Email
-        let user = await User.findOne({ 
-            $or: [{ appleId }, { email }] 
-        });
-
-        if (user) {
-            // Link Apple ID if missing
-            if (!user.appleId) {
-                user.appleId = appleId;
-                await user.save();
+        // Apple only sends 'fullName' on the VERY FIRST login.
+        if (fullName) {
+            const name = `${fullName.givenName || ''} ${fullName.familyName || ''}`.trim();
+            if (name) {
+                // Update Auth Metadata
+                await supabase.auth.updateUser({ data: { name } });
+                
+                // Update Public Table
+                await supabase.from('users').update({ name }).eq('id', data.user.id);
             }
-        } else {
-            // New User: Needs Transaction
-            if (!email) {
-                // Apple only sends email on FIRST login. If we don't have it and user not found, we can't create account.
-                throw new Error("Apple did not provide an email. Please go to Apple ID settings and revoke access for this app, then try again.");
-            }
-
-            session.startTransaction();
-
-            // Construct name from frontend data (Apple only sends name on first login)
-            const constructedName = fullName 
-                ? `${fullName.givenName || ''} ${fullName.familyName || ''}`.trim() 
-                : "Apple User";
-            
-            const randomPassword = crypto.randomBytes(16).toString('hex');
-
-            const [newUser] = await User.create([{
-                name: constructedName || "User",
-                email,
-                appleId,
-                password: randomPassword
-            }], { session });
-
-            await createDefaultCategories(newUser._id, session);
-
-            await session.commitTransaction();
-            user = newUser;
         }
 
-        const token = generateToken(user._id);
+        // Check for default categories
+        const { count } = await supabase
+            .from('categories')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', data.user.id);
+
+        if (count === 0) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await createDefaultCategories(data.user.id);
+        }
 
         res.status(200).json({
             success: true,
             message: 'Apple login successful',
-            data: { token, user }
+            data: { token: data.session.access_token, user: data.user }
         });
 
     } catch (error) {
-        if (session.inTransaction()) {
-            await session.abortTransaction();
-        }
         next(error);
-    } finally {
-        session.endSession();
     }
 };
 
-export const signOut = (req, res) => {
-    // Client side just needs to delete the token
-    res.status(200).json({
-        success: true,
-        message: 'User signed out successfully'
-    });
+// 5. Sign Out
+export const signOut = async (req, res, next) => {
+    try {
+        const { error } = await supabase.auth.signOut();
+        if (error) throw error;
+        
+        res.status(200).json({
+            success: true,
+            message: 'User signed out successfully'
+        });
+    } catch (error) {
+        next(error);
+    }
 }

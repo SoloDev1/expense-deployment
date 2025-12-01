@@ -2,25 +2,28 @@ import { Router } from "express";
 import {
   createTransaction,
   getTransactions,
-    getTransactionById,
-    updateTransaction,
-    deleteTransaction
+  getTransactionById,
+  updateTransaction,
+  deleteTransaction
 } from "../controllers/transaction.controller.js";  
 
 import { authorize } from "../middleware/auth.middleware.js";
 
 const transactionRoute = Router();
       
-// Route to create a new transaction
-transactionRoute.post("/", createTransaction);
-// Route to get all transactions
+// 1. FIXED: Added 'authorize' here
+transactionRoute.post("/", authorize, createTransaction);
+
+// 2. Get all transactions (supports ?page=1&limit=20&type=expense)
 transactionRoute.get("/", authorize, getTransactions); 
-// Route to get a transaction by ID
+
+// 3. Get specific transaction
 transactionRoute.get("/:id", authorize, getTransactionById);
-// Route to update a transaction by ID
+
+// 4. Update transaction
 transactionRoute.put("/:id", authorize, updateTransaction);
-// Route to delete a transaction by ID
+
+// 5. Delete transaction
 transactionRoute.delete("/:id", authorize, deleteTransaction);
 
 export default transactionRoute;
-

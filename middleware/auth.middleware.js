@@ -1,38 +1,51 @@
-import jwt from 'jsonwebtoken';
-import { JWT_SECRET } from '../config/env.js';
-import User from '../models/user.model.js';
+import supabase from '../config/supabase.js';
 
-
-export const authorize = async (req, res, next) =>{
+export const authorize = async (req, res, next) => {
     try {
-        let token;
+        // 1. Robust Token Extraction
         const authHeader = req.headers.authorization;
-        if(authHeader && authHeader.startsWith('Bearer ')) {
-            token = authHeader.split(' ')[1];
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ message: 'No token provided' });
         }
 
-        if(!token) return res.status(401).json({message: 'Unauthorized'})
+        const token = authHeader.split(' ')[1];
 
-        const decode = jwt.verify(token, JWT_SECRET);
+        // 2. Verify Token (Essential Security Step)
+        // usage of getUser is correct (checks revocation/validity server-side)
+        const { data: { user: authUser }, error: authError } = await supabase.auth.getUser(token);
 
-        const user = await User.findById(decode.userId).select('-password');
+        if (authError || !authUser) {
+            return res.status(401).json({ message: 'Invalid or expired token' });
+        }
 
-        if(!user) return res.status(401).json({message: 'User no longer exists'})
+        // 3. Fetch Profile (The "Expensive" Step)
+        // Optimization Note: Only keep this block if your routes absolutely require 
+        // fields like 'username' or 'role' from the public table.
+        const { data: userProfile, error: profileError } = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', authUser.id)
+            .single();
 
-        req.user = user;
+        // 4. Handle Data Integrity Issues
+        if (profileError || !userProfile) {
+            console.error(`Integrity Error: User ${authUser.id} exists in Auth but not in public.users`);
+            // We still return 401 or 403 to the client, but we log the specific issue for the dev.
+            return res.status(401).json({ message: 'User profile could not be verified' });
+        }
+
+        // 5. Attach Unified User Object
+        // It is often helpful to keep the Auth email separate or ensure it's merged correctly.
+        req.user = {
+            ...userProfile,
+            email: authUser.email, // Ensure email is available even if not in public table
+            auth_id: authUser.id    // Explicit reference to the Auth ID
+        };
+
         next();
 
-
-    } catch(error){
-        if(error.name === 'TokenExpiredError'){
-            return res.status(401).json({message: 'Session expired. Please log in again.'})
-        }
-
-        if(error.name === 'JsonWebTokenError'){
-            return res.status(401).json({message: 'Invalid token. Please log in again.'})
-        }
-        res.status(401).json({message: 'Unauthorized', error: error.message})
+    } catch (error) {
+        console.error('Authorization Middleware Error:', error);
+        res.status(500).json({ message: 'Internal Server Error during authorization' });
     }
-
-
-}
+};

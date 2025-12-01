@@ -1,70 +1,81 @@
 import express from 'express';
-import { PORT, NODE_ENV, CLIENT_URL } from './config/env.js';
-import connectDB from './database/mongodb.js';
-import authRoute from './routes/auth.route.js';
+import cors from 'cors';
 import cookieParser from 'cookie-parser';
+
+import { PORT, NODE_ENV, CLIENT_URL } from './config/env.js';
+
+// Middleware Imports
 import errorMiddleware from './middleware/error.middleware.js';
 import arcjetMiddleware from './middleware/arcjet.middleware.js';
 import { notFoundMiddleware } from './middleware/notFound.middleware.js';
+
+// Route Imports
+import authRoute from './routes/auth.route.js';
 import userRoute from './routes/user.route.js';
 import categoryRoute from './routes/category.route.js';
 import transactionRouter from './routes/transaction.route.js';
 import budgetRoute from './routes/budget.route.js';
 import settingsRoute from './routes/settings.route.js';
 import analyticsRoute from './routes/analytics.route.js';
-import cors from 'cors'
-
-
-
-
 
 const app = express();
+
+// ==========================================
+// 1. GLOBAL MIDDLEWARE
+// ==========================================
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Cors
+// CORS: Security configuration
 app.use(cors({
   origin: [
-    CLIENT_URL,              // Your frontend (prod)
-    "http://localhost:8081", // Expo web
-    "http://localhost:19006",// Expo web alt port
-    "expo://*",              // Native Expo mobile
+    CLIENT_URL,              // Production Frontend
+    "http://localhost:8081", // Expo Web
+    "http://localhost:19006",// Expo Web (Alt)
+    "expo://*",              // Expo Mobile Go
+    "http://localhost:3000"  // Standard React Dev (Optional addition)
   ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
   credentials: true,
 }));
+app.options("*", cors()); // Enable Pre-flight across-the-board
 
-app.options("*", cors()); // Allow preflight
-
-
-// Arcjet middleware for security
+// Security / Rate Limiting (Arcjet)
 app.use(arcjetMiddleware);
 
+// ==========================================
+// 2. ROUTES
+// ==========================================
 
-// Routes
-// API Routes
+// Health Check (Must be before 404)
+app.get('/', (req, res) => {
+  res.send(`Welcome to the Personal Finance API (${NODE_ENV})`);
+});
+
 app.use("/api/v1/auth", authRoute);
-app.use("/api/v1/user", userRoute);
-app.use("/api/v1/category", categoryRoute);
-app.use("/api/v1/transaction", transactionRouter);
-app.use("/api/v1/budget", budgetRoute);
+app.use("/api/v1/users", userRoute);
+app.use("/api/v1/categories", categoryRoute);
+app.use("/api/v1/transactions", transactionRouter);
+app.use("/api/v1/budgets", budgetRoute);
 app.use("/api/v1/settings", settingsRoute);
 app.use("/api/v1/analytics", analyticsRoute);
-// Error handling middleware
-app.use(errorMiddleware);
 
-// Not Found Middleware
+
+// Catch 404 (Requests that didn't match any route above)
 app.use(notFoundMiddleware);
 
-const port = PORT  || 5000
-app.get('/', (req, res) => {
-    res.send('Hello, welcome to the backend of my application');
-});
+// Global Error Handler (Catches errors from next(err))
+app.use(errorMiddleware);
 
-app.listen(port, async () => {
-    console.log(`Server is running on port: http://localhost:${port} in ${NODE_ENV} mode`);
-    await connectDB();
-});
+
+const port = PORT || 5000;
+
+// Only listen if this file is run directly (not imported by tests)
+if (NODE_ENV !== 'test') {
+  app.listen(port, () => {
+    console.log(`🚀 Server is running on port: http://localhost:${port} in ${NODE_ENV} mode`);
+  });
+}
 
 export default app;
