@@ -29,13 +29,7 @@ app.use(cookieParser());
 
 // CORS: Security configuration
 app.use(cors({
-  origin: [
-    CLIENT_URL,              // Production Frontend
-    "http://localhost:8081", // Expo Web
-    "http://localhost:19006",// Expo Web (Alt)
-    "expo://*",              // Expo Mobile Go
-    "http://localhost:3000"  // Standard React Dev (Optional addition)
-  ],
+  origin: "*",
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
   credentials: true,
 }));
