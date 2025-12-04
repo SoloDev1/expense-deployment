@@ -82,15 +82,43 @@ CREATE POLICY "Users can delete own budgets" ON public.budgets FOR DELETE USING 
 
 -- FUNCTION TO HANDLE NEW USER SIGNUP (Trigger)
 -- This automatically inserts a row into public.users when a new user signs up via Supabase Auth
+-- 1. Create the Function (The Logic)
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
+  -- A. Insert the Profile (This prevents the "Profile not found" error)
   INSERT INTO public.users (id, email, name)
-  VALUES (new.id, new.email, new.raw_user_meta_data->>'name');
+  VALUES (
+    new.id, 
+    new.email, 
+    new.raw_user_meta_data->>'name'
+  );
+
+  -- B. Insert Default Categories (So the user isn't looking at a blank screen)
+  INSERT INTO public.categories (user_id, name, type, icon, color)
+  VALUES 
+    (new.id, 'Salary', 'income', 'wallet', '#10B981'),
+    (new.id, 'Freelance', 'income', 'laptop', '#3B82F6'),
+    (new.id, 'Food', 'expense', 'pizza', '#F59E0B'),
+    (new.id, 'Rent', 'expense', 'home', '#EF4444'),
+    (new.id, 'Transport', 'expense', 'car', '#6366F1'),
+    (new.id, 'Entertainment', 'expense', 'game-controller', '#EC4899');
+
   RETURN new;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- 2. Create the Trigger (The Listener)
+-- We drop it first to ensure we are replacing any old broken versions
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+
+
