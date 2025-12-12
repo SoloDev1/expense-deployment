@@ -1,4 +1,4 @@
-import supabase from '../config/supabase.js';
+import supabaseUser from '../config/user.supabase.js';
 
 // 1. Create a new transaction 
 export const createTransaction = async (req, res, next) => {
@@ -19,7 +19,7 @@ export const createTransaction = async (req, res, next) => {
             throw error;
         }
 
-        const { data, error } = await supabase
+        const { data, error } = await supabaseUser
             .from('transactions')
             .insert({
                 user_id: req.user.id, // Comes from your authorize middleware
@@ -49,7 +49,7 @@ export const getTransactions = async (req, res, next) => {
         const from = (page - 1) * limit;
         const to = from + limit - 1;
 
-        let query = supabase
+        let query = supabaseUser
             .from('transactions')
             .select('*, categories(name, icon, color)', { count: 'exact' }) // Get total count too
             .eq('user_id', req.user.id)
@@ -81,7 +81,7 @@ export const getTransactions = async (req, res, next) => {
 export const getTransactionById = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { data, error } = await supabase
+        const { data, error } = await supabaseUser
             .from('transactions')
             .select('*, categories(*)')
             .eq('user_id', req.user.id) // Security: Ensure they own it
@@ -115,7 +115,7 @@ export const updateTransaction = async (req, res, next) => {
         if (description !== undefined) updates.description = description;
 
         // Security: We must use .eq('user_id', req.user.id) so they can't update someone else's row
-        const { data, error } = await supabase
+        const { data, error } = await supabaseUser
             .from('transactions')
             .update(updates)
             .eq('user_id', req.user.id)
@@ -147,7 +147,7 @@ export const deleteTransaction = async (req, res, next) => {
 
         // Supabase delete returns status 204 (No Content) usually, 
         // but we can ask for the deleted row to ensure it existed.
-        const { data, error } = await supabase
+        const { data, error } = await supabaseUser
             .from('transactions')
             .delete()
             .eq('user_id', req.user.id)

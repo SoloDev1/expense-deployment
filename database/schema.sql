@@ -1,18 +1,20 @@
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- USERS TABLE (Sync with Supabase Auth)
+-- 1. USERS TABLE (Modified for Roles)
 CREATE TABLE public.users (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT UNIQUE NOT NULL,
   name TEXT,
+  -- NEW: Role Column
+  role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin')), 
   currency TEXT DEFAULT 'USD',
   dark_mode BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- CATEGORIES TABLE
+-- 2. CATEGORIES TABLE
 CREATE TABLE public.categories (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
@@ -24,7 +26,7 @@ CREATE TABLE public.categories (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- TRANSACTIONS TABLE
+-- 3. TRANSACTIONS TABLE
 CREATE TABLE public.transactions (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
@@ -38,7 +40,7 @@ CREATE TABLE public.transactions (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- BUDGETS TABLE
+-- 4. BUDGETS TABLE
 CREATE TABLE public.budgets (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
@@ -51,42 +53,79 @@ CREATE TABLE public.budgets (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- SETTINGS TABLE (Optional, if we want to separate from users)
--- For now, user settings are in the users table, but if we need more complex settings:
--- CREATE TABLE public.settings (...);
+-- 5. ADMIN HELPER FUNCTION (Crucial for RLS)
+-- This function checks if the logged-in user has the 'admin' role.
+-- SECURITY DEFINER allows it to bypass RLS to read the role column safely.
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1
+    FROM public.users
+    WHERE id = auth.uid() AND role = 'admin'
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- RLS POLICIES (Row Level Security)
+-- 6. RLS POLICIES
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.budgets ENABLE ROW LEVEL SECURITY;
 
--- Users can only see their own data
-CREATE POLICY "Users can view own profile" ON public.users FOR SELECT USING (auth.uid() = id);
-CREATE POLICY "Users can update own profile" ON public.users FOR UPDATE USING (auth.uid() = id);
+-- USERS POLICIES
+-- Users see own profile, Admins see all profiles
+CREATE POLICY "Users view own, Admins view all" ON public.users 
+  FOR SELECT USING (auth.uid() = id OR is_admin());
 
-CREATE POLICY "Users can view own categories" ON public.categories FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own categories" ON public.categories FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users can update own categories" ON public.categories FOR UPDATE USING (auth.uid() = user_id);
-CREATE POLICY "Users can delete own categories" ON public.categories FOR DELETE USING (auth.uid() = user_id);
+-- Only users can update their own specific fields (Admins usually handle this via dashboard logic, or you can add OR is_admin())
+CREATE POLICY "Users update own" ON public.users 
+  FOR UPDATE USING (auth.uid() = id);
 
-CREATE POLICY "Users can view own transactions" ON public.transactions FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own transactions" ON public.transactions FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users can update own transactions" ON public.transactions FOR UPDATE USING (auth.uid() = user_id);
-CREATE POLICY "Users can delete own transactions" ON public.transactions FOR DELETE USING (auth.uid() = user_id);
+-- CATEGORIES POLICIES
+CREATE POLICY "Users view own, Admins view all" ON public.categories 
+  FOR SELECT USING (auth.uid() = user_id OR is_admin());
+  
+CREATE POLICY "Users insert own, Admins insert for any" ON public.categories 
+  FOR INSERT WITH CHECK (auth.uid() = user_id OR is_admin());
+  
+CREATE POLICY "Users update own, Admins update all" ON public.categories 
+  FOR UPDATE USING (auth.uid() = user_id OR is_admin());
+  
+CREATE POLICY "Users delete own, Admins delete all" ON public.categories 
+  FOR DELETE USING (auth.uid() = user_id OR is_admin());
 
-CREATE POLICY "Users can view own budgets" ON public.budgets FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own budgets" ON public.budgets FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users can update own budgets" ON public.budgets FOR UPDATE USING (auth.uid() = user_id);
-CREATE POLICY "Users can delete own budgets" ON public.budgets FOR DELETE USING (auth.uid() = user_id);
+-- TRANSACTIONS POLICIES
+CREATE POLICY "Users view own, Admins view all" ON public.transactions 
+  FOR SELECT USING (auth.uid() = user_id OR is_admin());
 
--- FUNCTION TO HANDLE NEW USER SIGNUP (Trigger)
--- This automatically inserts a row into public.users when a new user signs up via Supabase Auth
--- 1. Create the Function (The Logic)
+CREATE POLICY "Users insert own, Admins insert for any" ON public.transactions 
+  FOR INSERT WITH CHECK (auth.uid() = user_id OR is_admin());
+
+CREATE POLICY "Users update own, Admins update all" ON public.transactions 
+  FOR UPDATE USING (auth.uid() = user_id OR is_admin());
+
+CREATE POLICY "Users delete own, Admins delete all" ON public.transactions 
+  FOR DELETE USING (auth.uid() = user_id OR is_admin());
+
+-- BUDGETS POLICIES
+CREATE POLICY "Users view own, Admins view all" ON public.budgets 
+  FOR SELECT USING (auth.uid() = user_id OR is_admin());
+
+CREATE POLICY "Users insert own, Admins insert for any" ON public.budgets 
+  FOR INSERT WITH CHECK (auth.uid() = user_id OR is_admin());
+
+CREATE POLICY "Users update own, Admins update all" ON public.budgets 
+  FOR UPDATE USING (auth.uid() = user_id OR is_admin());
+
+CREATE POLICY "Users delete own, Admins delete all" ON public.budgets 
+  FOR DELETE USING (auth.uid() = user_id OR is_admin());
+
+-- 7. FUNCTION TO HANDLE NEW USER SIGNUP (Trigger)
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-  -- A. Insert the Profile (This prevents the "Profile not found" error)
+  -- Insert the Profile (Role defaults to 'user' automatically)
   INSERT INTO public.users (id, email, name)
   VALUES (
     new.id, 
@@ -94,7 +133,7 @@ BEGIN
     new.raw_user_meta_data->>'name'
   );
 
-  -- B. Insert Default Categories (So the user isn't looking at a blank screen)
+  -- Insert Default Categories
   INSERT INTO public.categories (user_id, name, type, icon, color)
   VALUES 
     (new.id, 'Salary', 'income', 'wallet', '#10B981'),
@@ -102,23 +141,15 @@ BEGIN
     (new.id, 'Food', 'expense', 'pizza', '#F59E0B'),
     (new.id, 'Rent', 'expense', 'home', '#EF4444'),
     (new.id, 'Transport', 'expense', 'car', '#6366F1'),
-    (new.id, 'Entertainment', 'expense', 'game-controller', '#EC4899');
+    (new.id, 'Entertainment', 'expense', 'game-controller', '#272124ff');
 
   RETURN new;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 2. Create the Trigger (The Listener)
--- We drop it first to ensure we are replacing any old broken versions
+-- 8. Create the Trigger
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
-
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
-
-
-

@@ -7,4 +7,5 @@ if (!SB_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const supabase = createClient(SB_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+
 export default supabase;

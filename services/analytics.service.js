@@ -1,8 +1,8 @@
-import supabase from '../config/supabase.js';
+import supabaseUser from '../config/user.supabase.js';
 
 // --- Helper: Fetch raw transactions for a range ---
 const getTransactionsByRange = async (userId, startDate, endDate, type = null) => {
-    let query = supabase
+    let query = supabaseUser
         .from('transactions')
         .select('amount, date, type, categories(name, color, icon)')
         .eq('user_id', userId)

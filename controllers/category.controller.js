@@ -1,9 +1,9 @@
-import supabase from '../config/supabase.js';
+import supabaseUser from '../config/user.supabase.js';
 
 // 1. Get all categories
 export const getCategories = async (req, res, next) => {
     try {
-        const { data, error } = await supabase
+        const { data, error } = await supabaseUser
             .from('categories')
             .select('*')
             .eq('user_id', req.user.id)
@@ -21,7 +21,7 @@ export const getCategories = async (req, res, next) => {
 export const getCategoryById = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { data, error } = await supabase
+        const { data, error } = await supabaseUser
             .from('categories')
             .select('*')
             .eq('user_id', req.user.id)
@@ -60,7 +60,7 @@ export const createCategory = async (req, res, next) => {
             throw error;
         }
 
-        const { data, error } = await supabase
+        const { data, error } = await supabaseUser
             .from('categories')
             .insert({
                 user_id: req.user.id,
@@ -93,7 +93,7 @@ export const updateCategory = async (req, res, next) => {
         if (icon) updates.icon = icon;
         if (color) updates.color = color;
 
-        const { data, error } = await supabase
+        const { data, error } = await supabaseUser
             .from('categories')
             .update(updates)
             .eq('user_id', req.user.id)
@@ -121,7 +121,7 @@ export const deleteCategory = async (req, res, next) => {
     try {
         const { id } = req.params;
 
-        const { data, error } = await supabase
+        const { data, error } = await supabaseUser
             .from('categories')
             .delete()
             .eq('user_id', req.user.id)

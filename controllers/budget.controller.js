@@ -1,4 +1,4 @@
-import supabase from '../config/supabase.js';
+import supabaseUser from '../config/user.supabase.js';
 
 // 1. Create a Budget
 export const createBudget = async (req, res, next) => {
@@ -22,7 +22,7 @@ export const createBudget = async (req, res, next) => {
     const endDate = new Date(year, monthNum, 0).toISOString().split('T')[0]; // Last day of month
 
     // Check for existing budget to prevent duplicates
-    const { data: existing } = await supabase
+    const { data: existing } = await supabaseUser
       .from('budgets')
       .select('id')
       .eq('user_id', req.user.id)
@@ -36,7 +36,7 @@ export const createBudget = async (req, res, next) => {
       throw error;
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await supabaseUser
       .from('budgets')
       .insert({
         user_id: req.user.id,
@@ -70,7 +70,7 @@ export const getBudgets = async (req, res, next) => {
     const endDate = new Date(year, monthNum, 0).toISOString().split('T')[0];
 
     // REQUEST 1: Get all budgets for this month
-    const { data: budgets, error: budgetError } = await supabase
+    const { data: budgets, error: budgetError } = await supabaseUser
       .from('budgets')
       .select('*, categories(name, color, icon)')
       .eq('user_id', req.user.id)
@@ -85,7 +85,7 @@ export const getBudgets = async (req, res, next) => {
 
     // REQUEST 2: Get ALL expenses for this month in ONE go
     // Instead of querying inside a loop, we fetch the bulk data once.
-    const { data: transactions, error: txError } = await supabase
+    const { data: transactions, error: txError } = await supabaseUser
       .from('transactions')
       .select('category_id, amount')
       .eq('user_id', req.user.id)
@@ -123,7 +123,7 @@ export const updateBudget = async (req, res, next) => {
       throw error;
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await supabaseUser
       .from('budgets')
       .update({ amount: limit })
       .eq('user_id', req.user.id)
@@ -151,7 +151,7 @@ export const deleteBudget = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const { data, error } = await supabase
+    const { data, error } = await supabaseUser
       .from('budgets')
       .delete()
       .eq('user_id', req.user.id)

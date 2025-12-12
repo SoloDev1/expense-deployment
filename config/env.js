@@ -9,7 +9,8 @@ export const {
   ARCJET_ENV,
   SUPABASE_SERVICE_ROLE_KEY,
   CLIENT_URL,
-  SB_URL
+  SB_URL,
+  SUPABASE_SERVICE_ANON_KEY
 } = process.env;
 
 console.log(CLIENT_URL, SB_URL)
