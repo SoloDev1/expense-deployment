@@ -4,7 +4,8 @@ import {
   getTransactions,
   getTransactionById,
   updateTransaction,
-  deleteTransaction
+  deleteTransaction,
+  getDashboardSummary
 } from "../controllers/transaction.controller.js";  
 
 import { authorize } from "../middleware/auth.middleware.js";
@@ -16,6 +17,8 @@ transactionRoute.post("/", authorize, createTransaction);
 
 // 2. Get all transactions (supports ?page=1&limit=20&type=expense)
 transactionRoute.get("/", authorize, getTransactions); 
+
+transactionRoute.get('/summary', getDashboardSummary)
 
 // 3. Get specific transaction
 transactionRoute.get("/:id", authorize, getTransactionById);

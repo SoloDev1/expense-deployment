@@ -40,6 +40,57 @@ export const createTransaction = async (req, res, next) => {
     }
 };
 
+// 6. Get Dashboard Summary (Optimized with Promise.all)
+export const getDashboardSummary = async (req, res, next) => {
+    try {
+        // Prepare the 3 promises but don't await them individually yet
+        const incomePromise = supabaseUser
+            .from('transactions')
+            .select('amount.sum()')
+            .eq('user_id', req.user.id)
+            .eq('type', 'income');
+
+        const expensePromise = supabaseUser
+            .from('transactions')
+            .select('amount.sum()')
+            .eq('user_id', req.user.id)
+            .eq('type', 'expense');
+
+        const recentPromise = supabaseUser
+            .from('transactions')
+            .select('*, categories(name, icon, color)')
+            .eq('user_id', req.user.id)
+            .order('date', { ascending: false })
+            .limit(5);
+
+        // Fire them all at once and wait for all to finish
+        const [
+            { data: incomeData, error: incomeError },
+            { data: expenseData, error: expenseError },
+            { data: recent, error: recentError }
+        ] = await Promise.all([incomePromise, expensePromise, recentPromise]);
+
+        // Check for errors (fail fast)
+        if (incomeError) throw incomeError;
+        if (expenseError) throw expenseError;
+        if (recentError) throw recentError;
+
+        // Parse results
+        const totalIncome = incomeData[0]?.sum || 0;
+        const totalExpense = expenseData[0]?.sum || 0;
+
+        res.status(200).json({
+            totalBalance: totalIncome - totalExpense,
+            income: totalIncome,
+            expense: totalExpense,
+            recentTransactions: recent
+        });
+
+    } catch (error) {
+        next(error);
+    }
+};
+
 // 2. Get transactions (Added Pagination & Filtering)
 export const getTransactions = async (req, res, next) => {
     try {
