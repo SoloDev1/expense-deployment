@@ -1,12 +1,12 @@
--- Enable UUID extension
+-- 1. EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 1. USERS TABLE (Modified for Roles)
+-- 2. TABLES
+-- USERS
 CREATE TABLE public.users (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT UNIQUE NOT NULL,
   name TEXT,
-  -- NEW: Role Column
   role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin')), 
   currency TEXT DEFAULT 'USD',
   dark_mode BOOLEAN DEFAULT FALSE,
@@ -14,7 +14,7 @@ CREATE TABLE public.users (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. CATEGORIES TABLE
+-- CATEGORIES
 CREATE TABLE public.categories (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
@@ -26,7 +26,7 @@ CREATE TABLE public.categories (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. TRANSACTIONS TABLE
+-- TRANSACTIONS
 CREATE TABLE public.transactions (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
@@ -40,7 +40,7 @@ CREATE TABLE public.transactions (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. BUDGETS TABLE
+-- BUDGETS
 CREATE TABLE public.budgets (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
@@ -53,9 +53,8 @@ CREATE TABLE public.budgets (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 5. ADMIN HELPER FUNCTION (Crucial for RLS)
--- This function checks if the logged-in user has the 'admin' role.
--- SECURITY DEFINER allows it to bypass RLS to read the role column safely.
+-- 3. ADMIN HELPER FUNCTION
+-- SECURITY DEFINER is vital here to prevent infinite recursion in RLS policies
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN AS $$
 BEGIN
@@ -67,22 +66,20 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 6. RLS POLICIES
+-- 4. RLS POLICIES
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.budgets ENABLE ROW LEVEL SECURITY;
 
--- USERS POLICIES
--- Users see own profile, Admins see all profiles
+-- Users Policies
 CREATE POLICY "Users view own, Admins view all" ON public.users 
   FOR SELECT USING (auth.uid() = id OR is_admin());
 
--- Only users can update their own specific fields (Admins usually handle this via dashboard logic, or you can add OR is_admin())
 CREATE POLICY "Users update own" ON public.users 
   FOR UPDATE USING (auth.uid() = id);
 
--- CATEGORIES POLICIES
+-- Categories Policies
 CREATE POLICY "Users view own, Admins view all" ON public.categories 
   FOR SELECT USING (auth.uid() = user_id OR is_admin());
   
@@ -95,7 +92,7 @@ CREATE POLICY "Users update own, Admins update all" ON public.categories
 CREATE POLICY "Users delete own, Admins delete all" ON public.categories 
   FOR DELETE USING (auth.uid() = user_id OR is_admin());
 
--- TRANSACTIONS POLICIES
+-- Transactions Policies
 CREATE POLICY "Users view own, Admins view all" ON public.transactions 
   FOR SELECT USING (auth.uid() = user_id OR is_admin());
 
@@ -108,7 +105,7 @@ CREATE POLICY "Users update own, Admins update all" ON public.transactions
 CREATE POLICY "Users delete own, Admins delete all" ON public.transactions 
   FOR DELETE USING (auth.uid() = user_id OR is_admin());
 
--- BUDGETS POLICIES
+-- Budgets Policies
 CREATE POLICY "Users view own, Admins view all" ON public.budgets 
   FOR SELECT USING (auth.uid() = user_id OR is_admin());
 
@@ -121,11 +118,15 @@ CREATE POLICY "Users update own, Admins update all" ON public.budgets
 CREATE POLICY "Users delete own, Admins delete all" ON public.budgets 
   FOR DELETE USING (auth.uid() = user_id OR is_admin());
 
--- 7. FUNCTION TO HANDLE NEW USER SIGNUP (Trigger)
+-- 5. TRIGGER FOR NEW USER (Consolidated Logic)
+-- This function now creates the user profile AND the default categories
 CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER 
+LANGUAGE plpgsql 
+SECURITY DEFINER SET search_path = public
+AS $$
 BEGIN
-  -- Insert the Profile (Role defaults to 'user' automatically)
+  -- 1. Create the User Profile
   INSERT INTO public.users (id, email, name)
   VALUES (
     new.id, 
@@ -133,21 +134,21 @@ BEGIN
     new.raw_user_meta_data->>'name'
   );
 
-  -- Insert Default Categories
+  -- 2. Create Default Categories for the new user
   INSERT INTO public.categories (user_id, name, type, icon, color)
   VALUES 
-    (new.id, 'Salary', 'income', 'wallet', '#10B981'),
-    (new.id, 'Freelance', 'income', 'laptop', '#3B82F6'),
-    (new.id, 'Food', 'expense', 'pizza', '#F59E0B'),
-    (new.id, 'Rent', 'expense', 'home', '#EF4444'),
-    (new.id, 'Transport', 'expense', 'car', '#6366F1'),
-    (new.id, 'Entertainment', 'expense', 'game-controller', '#272124ff');
+    (new.id, 'Salary', 'income', '💼', '#4CAF50'),
+    (new.id, 'Freelance', 'income', '🖥️', '#2196F3'),
+    (new.id, 'Food', 'expense', '🍔', '#FF5722'),
+    (new.id, 'Rent', 'expense', '🏠', '#9C27B0'),
+    (new.id, 'Utilities', 'expense', '💡', '#FFC107'),
+    (new.id, 'Entertainment', 'expense', '🎬', '#E91E63');
 
   RETURN new;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
--- 8. Create the Trigger
+-- 6. TRIGGER SETUP
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 
 CREATE TRIGGER on_auth_user_created
